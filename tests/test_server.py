@@ -14,13 +14,14 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO = os.path.join(HERE, "demo_server.py")
+EXAMPLES = os.path.join(os.path.dirname(HERE), "examples")
 
 
 class Client:
     """A tiny MCP client: writes requests to stdin, reads lines from stdout."""
 
-    def __init__(self, script=DEMO):
-        self.proc = subprocess.Popen([sys.executable, script], stdin=subprocess.PIPE,
+    def __init__(self, script=DEMO, *args):
+        self.proc = subprocess.Popen([sys.executable, script, *args], stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.lines, self.stderr, self.next_id = queue.Queue(), [], 0
         threading.Thread(target=self._pump, args=(self.proc.stdout, self.lines.put), daemon=True).start()
@@ -245,6 +246,49 @@ class ServerTest(unittest.TestCase):
 
     def test_exits_when_stdin_closes(self):
         self.assertEqual(self.client.close(), 0)
+
+
+
+class ExamplesTest(unittest.TestCase):
+    """Each example starts, lists its tools and answers one call."""
+
+    def run_example(self, script, *args):
+        client = Client(os.path.join(EXAMPLES, script), *args)
+        self.addCleanup(client.close)
+        client.request("initialize", {"protocolVersion": "2025-11-25"})
+        names = [t["name"] for t in client.request("tools/list")[0]["result"]["tools"]]
+        return client, names
+
+    def call(self, client, name, arguments, meta=None):
+        params = {"name": name, "arguments": arguments}
+        if meta:
+            params["_meta"] = meta
+        return client.request("tools/call", params)
+
+    def test_hello(self):
+        client, names = self.run_example("hello.py")
+        self.assertEqual(names, ["greet"])
+        reply, _ = self.call(client, "greet", {"name": "Ada", "excited": True})
+        self.assertEqual(reply["result"]["content"][0]["text"], "Hello, Ada!")
+
+    def test_progress(self):
+        client, names = self.run_example("progress.py")
+        self.assertEqual(names, ["slow_count"])
+        reply, notes = self.call(client, "slow_count", {"to": 3, "seconds_per_step": 0}, {"progressToken": 1})
+        self.assertEqual(reply["result"]["content"][0]["text"], "Counted to 3.")
+        self.assertEqual(len(notes), 3)
+
+    def test_files(self):
+        client, names = self.run_example("files.py", HERE)
+        self.assertEqual(names, ["list_files", "read_file"])
+        reply, _ = self.call(client, "list_files", {"pattern": "*.py"})
+        found = [e["name"] for e in reply["result"]["structuredContent"]["entries"]]
+        self.assertIn("test_server.py", found)
+        reply, _ = self.call(client, "read_file", {"path": "demo_server.py", "max_chars": 10})
+        self.assertTrue(reply["result"]["content"][0]["text"].startswith('"""A serve\n... [cut:'))
+        reply, _ = self.call(client, "read_file", {"path": "../LICENSE"})
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn("outside the allowed folder", reply["result"]["content"][0]["text"])
 
 
 if __name__ == "__main__":
