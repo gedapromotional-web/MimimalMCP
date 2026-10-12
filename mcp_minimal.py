@@ -136,7 +136,7 @@ def _inspect_tool(func):
 class Context:
     """Handed to a tool that has a parameter annotated as `Context`."""
 
-    def __init__(self, server, request_id, tool_name, progress_token=None):
+    def __init__(self, server, request_id, tool_name, progress_token=None, stateless=False):
         self.request_id = request_id
         self.tool_name = tool_name
         self._server = server
@@ -144,7 +144,7 @@ class Context:
         self._last = None                   # last progress value sent
         self._finished = False
         self._cancel = threading.Event()
-        self._stateless = False
+        self._stateless = stateless         # answer in 2026-07-28 style
 
     @property
     def cancelled(self):
@@ -318,8 +318,9 @@ class Server:
                     ctx.log(f"cancelled ({params.get('reason') or 'no reason given'})")
 
     def _request(self, msg_id, method, params):
-        meta = params.get("_meta") or {}
-        version = meta.get(META + "protocolVersion") if isinstance(meta, dict) else None
+        meta = params.get("_meta")
+        meta = meta if isinstance(meta, dict) else {}
+        version = meta.get(META + "protocolVersion")
         if version is not None:             # a stateless request: check it first
             if version not in STATELESS_VERSIONS:
                 raise _RpcError(UNSUPPORTED_VERSION, "Unsupported protocol version",
@@ -328,7 +329,7 @@ class Server:
                 raise _RpcError(INVALID_PARAMS, f"_meta needs {META}clientCapabilities")
         stateless = version is not None or method == "server/discover"
         if method == "tools/call":
-            return self._start_call(msg_id, params, stateless)
+            return self._start_call(msg_id, params, meta.get("progressToken"), stateless)
         return self._finish(self._answer(method, params, stateless), stateless)
 
     def _finish(self, result, stateless):
@@ -364,7 +365,7 @@ class Server:
 
     # -- tool calls ----------------------------------------------------------
 
-    def _start_call(self, msg_id, params, stateless):
+    def _start_call(self, msg_id, params, progress_token, stateless):
         """Start a tool in its own thread, so we keep reading stdin meanwhile."""
         name, args = params.get("name"), params.get("arguments") or {}
         if not isinstance(name, str) or name not in self._tools:
@@ -372,9 +373,7 @@ class Server:
         if not isinstance(args, dict):
             raise _RpcError(INVALID_PARAMS, "arguments must be an object")
         func, _, ctx_param = self._tools[name]
-        meta = params.get("_meta") or {}
-        ctx = Context(self, msg_id, name, meta.get("progressToken"))
-        ctx._stateless = stateless
+        ctx = Context(self, msg_id, name, progress_token, stateless)
         if ctx_param:
             args = {**args, ctx_param: ctx}
         with self._lock:
@@ -386,8 +385,8 @@ class Server:
     def _run_tool(self, func, args, ctx):
         try:
             result = _to_result(func(**args))
-        except Cancelled:
-            result = None
+        except Cancelled:                   # not sent if really cancelled (see below)
+            result = _error_result("Cancelled.")
         except ToolError as e:              # expected failure: just the message
             result = _error_result(str(e))
         except Exception as e:              # bug or bad arguments: report, keep serving
