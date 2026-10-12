@@ -230,6 +230,8 @@ class Server:
             tool_name = name or f.__name__
             if not _TOOL_NAME.match(tool_name):
                 raise ValueError(f"invalid tool name {tool_name!r}: use 1-128 of A-Z a-z 0-9 _ . -")
+            if inspect.iscoroutinefunction(f):
+                raise TypeError(f"{tool_name}: async tools are not supported, use a plain def")
             auto_schema, ctx_param = _inspect_tool(f)
             spec = {"name": tool_name,
                     "description": description or inspect.getdoc(f) or "",

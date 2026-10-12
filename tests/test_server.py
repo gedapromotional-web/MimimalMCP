@@ -249,6 +249,22 @@ class ServerTest(unittest.TestCase):
 
 
 
+class RegistrationTest(unittest.TestCase):
+    """Mistakes caught when a tool is registered, before any client connects."""
+
+    def test_bad_name_and_async_are_rejected(self):
+        sys.path.insert(0, os.path.dirname(HERE))
+        from mcp_minimal import Server
+        server = Server("x")
+        with self.assertRaises(ValueError):
+            server.tool(name="has space")(lambda: None)
+
+        async def later():
+            pass
+        with self.assertRaises(TypeError):
+            server.tool(later)
+
+
 class ExamplesTest(unittest.TestCase):
     """Each example starts, lists its tools and answers one call."""
 
