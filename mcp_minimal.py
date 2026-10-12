@@ -29,12 +29,13 @@ import inspect
 import json
 import re
 import sys
+import threading
 import traceback
 import types
 import typing
 
 __version__ = "0.1.0"
-__all__ = ["Server"]
+__all__ = ["Server", "Context", "ToolError"]
 
 # Versions negotiated by `initialize`, newest first.
 HANDSHAKE_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -45,6 +46,10 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+
+class ToolError(Exception):
+    """Raise inside a tool to send a clean error message (no traceback) to the model."""
 
 
 class _RpcError(Exception):
@@ -111,8 +116,39 @@ def _inspect_tool(func):
     return schema, ctx_param
 
 
+# ----------------------------------------------------------------------------
+# Tool calls
+# ----------------------------------------------------------------------------
+
 class Context:
-    """Placeholder, filled in by the next step."""
+    """Handed to a tool that has a parameter annotated as `Context`."""
+
+    def __init__(self, server, request_id, tool_name):
+        self.request_id = request_id
+        self.tool_name = tool_name
+        self._server = server
+
+    def log(self, message):
+        """Write a line to stderr, tagged with the tool name."""
+        self._server.log(f"{self.tool_name}: {message}")
+
+
+def _to_result(value):
+    """Turn what a tool returned into an MCP CallToolResult."""
+    if value is None:
+        return {"content": []}
+    if isinstance(value, str):
+        return {"content": [{"type": "text", "text": value}]}
+    text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    result = {"content": [{"type": "text", "text": text}]}
+    if isinstance(value, dict):             # objects also go as structured data
+        result["structuredContent"] = json.loads(text)
+    return result
+
+
+def _error_result(message):
+    """A failed tool call: still a normal result, flagged with isError."""
+    return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
 # ----------------------------------------------------------------------------
@@ -129,6 +165,8 @@ class Server:
         self.name, self.version, self.instructions = name, version, instructions
         self._tools = {}            # name -> (function, tool description, ctx param)
         self._out = None            # binary stdout, set by run()
+        self._active = {}           # request id -> Context of a running tool
+        self._lock = threading.Lock()   # guards stdout and _active
 
     # -- registration --------------------------------------------------------
 
@@ -166,8 +204,9 @@ class Server:
     def _send(self, message):
         # json.dumps escapes newlines inside strings, so one message = one line.
         data = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
-        self._out.write(data.encode("utf-8", "replace") + b"\n")
-        self._out.flush()
+        with self._lock:            # tool threads write too
+            self._out.write(data.encode("utf-8", "replace") + b"\n")
+            self._out.flush()
 
     def _send_error(self, msg_id, code, message, data=None):
         error = {"code": code, "message": message}
@@ -236,4 +275,37 @@ class Server:
             return {}
         if method == "tools/list":
             return {"tools": [spec for _, spec, _ in self._tools.values()]}
+        if method == "tools/call":
+            return self._start_call(msg_id, params)
         raise _RpcError(METHOD_NOT_FOUND, f"Method not found: {method}")
+
+    # -- tool calls ----------------------------------------------------------
+
+    def _start_call(self, msg_id, params):
+        """Start a tool in its own thread, so we keep reading stdin meanwhile."""
+        name, args = params.get("name"), params.get("arguments") or {}
+        if not isinstance(name, str) or name not in self._tools:
+            raise _RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
+        if not isinstance(args, dict):
+            raise _RpcError(INVALID_PARAMS, "arguments must be an object")
+        func, _, ctx_param = self._tools[name]
+        ctx = Context(self, msg_id, name)
+        if ctx_param:
+            args = {**args, ctx_param: ctx}
+        with self._lock:
+            self._active[msg_id] = ctx
+        threading.Thread(target=self._run_tool, args=(func, args, ctx),
+                         name=f"tool-{name}", daemon=True).start()
+        return None                         # the thread sends the answer
+
+    def _run_tool(self, func, args, ctx):
+        try:
+            result = _to_result(func(**args))
+        except ToolError as e:              # expected failure: just the message
+            result = _error_result(str(e))
+        except Exception as e:              # bug or bad arguments: report, keep serving
+            ctx.log(f"failed\n{traceback.format_exc()}")
+            result = _error_result(f"{type(e).__name__}: {e}")
+        with self._lock:
+            self._active.pop(ctx.request_id, None)
+        self._send({"jsonrpc": "2.0", "id": ctx.request_id, "result": result})

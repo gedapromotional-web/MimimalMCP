@@ -95,7 +95,8 @@ class ServerTest(unittest.TestCase):
 
     def test_tools_list_schema_from_hints(self):
         tools = {t["name"]: t for t in self.call("tools/list")["result"]["tools"]}
-        self.assertEqual(list(tools), ["add", "typed", "manual"])
+        self.assertEqual(list(tools)[:3], ["add", "typed", "manual"])
+        self.assertNotIn("ctx", tools["info"]["inputSchema"]["properties"])
         add = tools["add"]
         self.assertEqual(add["description"], "Add two numbers.")
         self.assertEqual(add["inputSchema"], {
@@ -123,6 +124,51 @@ class ServerTest(unittest.TestCase):
         self.client.send_raw(b'[{"jsonrpc":"2.0","id":1,"method":"ping"}]\n')
         self.assertEqual(self.client.recv()["error"]["code"], -32600)
         self.assertEqual(self.call("ping")["result"], {})      # still alive
+
+    def tool(self, name, arguments=None):
+        return self.call("tools/call", {"name": name, "arguments": arguments or {}})
+
+    def test_call_returns_text(self):
+        self.assertEqual(self.tool("add", {"a": 2, "b": 3})["result"],
+                         {"content": [{"type": "text", "text": "5"}]})
+
+    def test_call_unicode_round_trip(self):
+        text = "caffè ☕ 日本 \U0001F600 line1\nline2"
+        self.assertEqual(self.tool("echo", {"text": text})["result"]["content"][0]["text"], text)
+
+    def test_call_dict_gives_structured_content(self):
+        result = self.tool("info")["result"]
+        self.assertEqual(result["structuredContent"]["tool"], "info")
+        self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+
+    def test_tool_exception_is_error_result(self):
+        result = self.tool("crash")["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["content"][0]["text"], "RuntimeError: boom")
+        self.assertEqual(self.tool("add", {"a": 1})["result"]["content"][0]["text"], "2")
+
+    def test_tool_error_message(self):
+        result = self.tool("refuse")["result"]
+        self.assertEqual(result, {"content": [{"type": "text", "text": "Not allowed here."}], "isError": True})
+
+    def test_bad_arguments_are_tool_errors(self):
+        self.assertTrue(self.tool("add", {})["result"]["isError"])
+        self.assertTrue(self.tool("add", {"a": 1, "zzz": 2})["result"]["isError"])
+
+    def test_unknown_tool_is_protocol_error(self):
+        self.assertEqual(self.tool("missing")["error"]["code"], -32602)
+        self.assertEqual(self.call("tools/call", {"name": "add", "arguments": [1]})["error"]["code"], -32602)
+
+    def test_print_in_tool_goes_to_stderr(self):
+        self.assertEqual(self.tool("chatty")["result"]["content"][0]["text"], "done")
+        self.client.close()
+        self.assertIn(b"this goes to stderr\n", b"".join(self.client.stderr))
+
+    def test_slow_tool_does_not_block_other_requests(self):
+        self.client.send({"jsonrpc": "2.0", "id": "slow", "method": "tools/call",
+                          "params": {"name": "sleep", "arguments": {"seconds": 1}}})
+        self.assertEqual(self.call("ping")["result"], {})     # answered first
+        self.assertEqual(self.client.recv()["id"], "slow")
 
     def test_exits_when_stdin_closes(self):
         self.assertEqual(self.client.close(), 0)
