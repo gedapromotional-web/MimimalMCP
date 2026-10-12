@@ -21,6 +21,9 @@ How it works, in short:
   * The client calls `initialize`, then `tools/list` to learn which tools
     exist (name, description, JSON Schema of the arguments).
   * `tools/call` runs one tool and returns its result as content blocks.
+  * Newer, stateless clients (protocol 2026-07-28) skip `initialize`: they
+    may call `server/discover`, and put the protocol version in the `_meta`
+    of every request. This server speaks both styles.
 
 Standard library only, Python 3.9+, MIT license.
 """
@@ -39,6 +42,9 @@ __all__ = ["Server", "Context", "ToolError", "Cancelled"]
 
 # Versions negotiated by `initialize`, newest first.
 HANDSHAKE_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+# Stateless versions: no handshake, every request names its version in _meta.
+STATELESS_VERSIONS = ("2026-07-28",)
+META = "io.modelcontextprotocol/"           # prefix of the reserved _meta keys
 
 # JSON-RPC error codes.
 PARSE_ERROR = -32700
@@ -46,6 +52,7 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+UNSUPPORTED_VERSION = -32022                # MCP-specific
 
 
 class ToolError(Exception):
@@ -70,6 +77,8 @@ class _RpcError(Exception):
 
 _JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean",
                dict: "object", list: "array", type(None): "null"}
+# Optional[int] has origin typing.Union; `int | None` (3.10+) has types.UnionType.
+_UNIONS = (typing.Union, getattr(types, "UnionType", typing.Union))
 
 
 def _schema_for(hint):
@@ -81,7 +90,7 @@ def _schema_for(hint):
         if notes:
             schema["description"] = " ".join(notes)
         return schema
-    if origin is typing.Union or origin is getattr(types, "UnionType", None):
+    if origin in _UNIONS:
         options = [_schema_for(a) for a in args]  # Optional[int], int | None
         return options[0] if len(options) == 1 else {"anyOf": options}
     if origin is typing.Literal:                # Literal["a", "b"] -> enum
@@ -135,6 +144,7 @@ class Context:
         self._last = None                   # last progress value sent
         self._finished = False
         self._cancel = threading.Event()
+        self._stateless = False
 
     @property
     def cancelled(self):
@@ -308,6 +318,33 @@ class Server:
                     ctx.log(f"cancelled ({params.get('reason') or 'no reason given'})")
 
     def _request(self, msg_id, method, params):
+        meta = params.get("_meta") or {}
+        version = meta.get(META + "protocolVersion") if isinstance(meta, dict) else None
+        if version is not None:             # a stateless request: check it first
+            if version not in STATELESS_VERSIONS:
+                raise _RpcError(UNSUPPORTED_VERSION, "Unsupported protocol version",
+                                {"supported": list(STATELESS_VERSIONS), "requested": version})
+            if not isinstance(meta.get(META + "clientCapabilities"), dict):
+                raise _RpcError(INVALID_PARAMS, f"_meta needs {META}clientCapabilities")
+        stateless = version is not None or method == "server/discover"
+        if method == "tools/call":
+            return self._start_call(msg_id, params, stateless)
+        return self._finish(self._answer(method, params, stateless), stateless)
+
+    def _finish(self, result, stateless):
+        """Add the fields that stateless results carry on top of the payload."""
+        if stateless:
+            result["resultType"] = "complete"
+            result["_meta"] = {META + "serverInfo": {"name": self.name, "version": self.version}}
+        return result
+
+    def _answer(self, method, params, stateless):
+        if method == "server/discover":
+            result = {"supportedVersions": list(STATELESS_VERSIONS),
+                      "capabilities": {"tools": {}}, "ttlMs": 0, "cacheScope": "public"}
+            if self.instructions:
+                result["instructions"] = self.instructions
+            return result
         if method == "initialize":
             wanted = params.get("protocolVersion")
             result = {"protocolVersion": wanted if wanted in HANDSHAKE_VERSIONS else HANDSHAKE_VERSIONS[0],
@@ -319,14 +356,15 @@ class Server:
         if method == "ping":
             return {}
         if method == "tools/list":
-            return {"tools": [spec for _, spec, _ in self._tools.values()]}
-        if method == "tools/call":
-            return self._start_call(msg_id, params)
+            result = {"tools": [spec for _, spec, _ in self._tools.values()]}
+            if stateless:                   # caching hints; 0 = always ask again
+                result.update(ttlMs=0, cacheScope="public")
+            return result
         raise _RpcError(METHOD_NOT_FOUND, f"Method not found: {method}")
 
     # -- tool calls ----------------------------------------------------------
 
-    def _start_call(self, msg_id, params):
+    def _start_call(self, msg_id, params, stateless):
         """Start a tool in its own thread, so we keep reading stdin meanwhile."""
         name, args = params.get("name"), params.get("arguments") or {}
         if not isinstance(name, str) or name not in self._tools:
@@ -336,6 +374,7 @@ class Server:
         func, _, ctx_param = self._tools[name]
         meta = params.get("_meta") or {}
         ctx = Context(self, msg_id, name, meta.get("progressToken"))
+        ctx._stateless = stateless
         if ctx_param:
             args = {**args, ctx_param: ctx}
         with self._lock:
@@ -358,4 +397,5 @@ class Server:
         with self._lock:
             self._active.pop(ctx.request_id, None)
         if not ctx.cancelled:               # a cancelled call gets no answer at all
+            result = self._finish(result, ctx._stateless)
             self._send({"jsonrpc": "2.0", "id": ctx.request_id, "result": result})

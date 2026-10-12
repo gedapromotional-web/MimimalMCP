@@ -22,7 +22,7 @@ def typed_tool(text: str, ratio: float, flag: bool, tags: list[str],
                mode: Literal["fast", "slow"] = "fast",
                limit: Optional[int] = None,
                note: Annotated[str, "A free note."] = "",
-               extra: dict[str, int] = None):
+               extra: Optional[dict[str, int]] = None):
     """Accept many kinds of arguments."""
     return "ok"
 

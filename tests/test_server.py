@@ -114,7 +114,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(props["mode"], {"enum": ["fast", "slow"], "default": "fast"})
         self.assertEqual(props["limit"], {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None})
         self.assertEqual(props["note"], {"type": "string", "description": "A free note.", "default": ""})
-        self.assertEqual(props["extra"]["additionalProperties"], {"type": "integer"})
+        self.assertEqual(props["extra"]["anyOf"][0]["additionalProperties"], {"type": "integer"})
         self.assertEqual(tools["manual"]["inputSchema"]["properties"], {"x": {"type": "string"}})
 
     def test_protocol_errors(self):
@@ -206,6 +206,42 @@ class ServerTest(unittest.TestCase):
         self.client.send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 12345}})
         self.client.send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": [1]}})
         self.assertEqual(self.call("ping")["result"], {})
+
+    # -- stateless protocol (2026-07-28) --
+
+    META = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {}}
+    SERVER_INFO = {"io.modelcontextprotocol/serverInfo": {"name": "demo", "version": "1.2.3"}}
+
+    def test_discover(self):
+        result = self.call("server/discover", {"_meta": self.META})["result"]
+        self.assertEqual(result, {"supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}},
+                                  "instructions": "Test server.", "ttlMs": 0, "cacheScope": "public",
+                                  "resultType": "complete", "_meta": self.SERVER_INFO})
+        self.assertEqual(self.call("server/discover")["result"]["supportedVersions"], ["2026-07-28"])
+
+    def test_stateless_tools_without_initialize(self):
+        result = self.call("tools/list", {"_meta": self.META})["result"]
+        self.assertEqual((result["resultType"], result["ttlMs"], result["cacheScope"]), ("complete", 0, "public"))
+        self.assertEqual(result["_meta"], self.SERVER_INFO)
+        reply, notes = self.client.request("tools/call", {
+            "name": "count", "arguments": {"steps": 2, "delay": 0},
+            "_meta": dict(self.META, progressToken="p")})
+        self.assertEqual(reply["result"]["resultType"], "complete")
+        self.assertEqual(reply["result"]["content"][0]["text"], "counted 2")
+        self.assertEqual(len(notes), 2)
+
+    def test_handshake_results_have_no_stateless_fields(self):
+        self.assertNotIn("resultType", self.call("tools/list")["result"])
+        self.assertNotIn("resultType", self.tool("add", {"a": 1})["result"])
+
+    def test_stateless_version_errors(self):
+        error = self.call("tools/list", {"_meta": dict(self.META, **{
+            "io.modelcontextprotocol/protocolVersion": "1900-01-01"})})["error"]
+        self.assertEqual(error["code"], -32022)
+        self.assertEqual(error["data"], {"supported": ["2026-07-28"], "requested": "1900-01-01"})
+        error = self.call("tools/list", {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}})["error"]
+        self.assertEqual(error["code"], -32602)
 
     def test_exits_when_stdin_closes(self):
         self.assertEqual(self.client.close(), 0)
