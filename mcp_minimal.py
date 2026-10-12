@@ -35,7 +35,7 @@ import types
 import typing
 
 __version__ = "0.1.0"
-__all__ = ["Server", "Context", "ToolError"]
+__all__ = ["Server", "Context", "ToolError", "Cancelled"]
 
 # Versions negotiated by `initialize`, newest first.
 HANDSHAKE_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -50,6 +50,10 @@ INTERNAL_ERROR = -32603
 
 class ToolError(Exception):
     """Raise inside a tool to send a clean error message (no traceback) to the model."""
+
+
+class Cancelled(Exception):
+    """Raised by Context.check_cancelled() once the client cancelled the call."""
 
 
 class _RpcError(Exception):
@@ -123,10 +127,43 @@ def _inspect_tool(func):
 class Context:
     """Handed to a tool that has a parameter annotated as `Context`."""
 
-    def __init__(self, server, request_id, tool_name):
+    def __init__(self, server, request_id, tool_name, progress_token=None):
         self.request_id = request_id
         self.tool_name = tool_name
         self._server = server
+        self._token = progress_token        # set only if the client wants progress
+        self._last = None                   # last progress value sent
+        self._finished = False
+        self._cancel = threading.Event()
+
+    @property
+    def cancelled(self):
+        """True once the client sent notifications/cancelled for this call."""
+        return self._cancel.is_set()
+
+    def check_cancelled(self):
+        """Raise Cancelled if the call was cancelled. Handy inside loops."""
+        if self._cancel.is_set():
+            raise Cancelled()
+
+    def progress(self, progress, total=None, message=None):
+        """Report progress, e.g. ctx.progress(3, 10, "file 3 of 10").
+
+        Does nothing when the client did not ask for progress, after the call
+        ended or was cancelled, or when the value does not grow (MCP requires
+        each notification to increase).
+        """
+        if self._token is None or self._finished or self.cancelled:
+            return
+        if self._last is not None and progress <= self._last:
+            return
+        self._last = progress
+        params = {"progressToken": self._token, "progress": progress}
+        if total is not None:
+            params["total"] = total
+        if message is not None:
+            params["message"] = message
+        self._server._send({"jsonrpc": "2.0", "method": "notifications/progress", "params": params})
 
     def log(self, message):
         """Write a line to stderr, tagged with the tool name."""
@@ -260,7 +297,15 @@ class Server:
             self._send({"jsonrpc": "2.0", "id": msg_id, "result": result})
 
     def _notification(self, method, params):
-        pass                                # notifications/initialized needs nothing
+        # notifications/initialized and unknown notifications need nothing.
+        if method == "notifications/cancelled":
+            request_id = params.get("requestId")
+            if isinstance(request_id, (str, int)):
+                with self._lock:
+                    ctx = self._active.get(request_id)
+                if ctx is not None:
+                    ctx._cancel.set()       # the tool sees ctx.cancelled == True
+                    ctx.log(f"cancelled ({params.get('reason') or 'no reason given'})")
 
     def _request(self, msg_id, method, params):
         if method == "initialize":
@@ -289,7 +334,8 @@ class Server:
         if not isinstance(args, dict):
             raise _RpcError(INVALID_PARAMS, "arguments must be an object")
         func, _, ctx_param = self._tools[name]
-        ctx = Context(self, msg_id, name)
+        meta = params.get("_meta") or {}
+        ctx = Context(self, msg_id, name, meta.get("progressToken"))
         if ctx_param:
             args = {**args, ctx_param: ctx}
         with self._lock:
@@ -301,11 +347,15 @@ class Server:
     def _run_tool(self, func, args, ctx):
         try:
             result = _to_result(func(**args))
+        except Cancelled:
+            result = None
         except ToolError as e:              # expected failure: just the message
             result = _error_result(str(e))
         except Exception as e:              # bug or bad arguments: report, keep serving
             ctx.log(f"failed\n{traceback.format_exc()}")
             result = _error_result(f"{type(e).__name__}: {e}")
+        ctx._finished = True
         with self._lock:
             self._active.pop(ctx.request_id, None)
-        self._send({"jsonrpc": "2.0", "id": ctx.request_id, "result": result})
+        if not ctx.cancelled:               # a cancelled call gets no answer at all
+            self._send({"jsonrpc": "2.0", "id": ctx.request_id, "result": result})

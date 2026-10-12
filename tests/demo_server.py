@@ -71,5 +71,16 @@ def sleep(seconds: float) -> str:
     return f"slept {seconds}"
 
 
+@server.tool()
+def count(steps: int, delay: float, ctx: Context) -> str:
+    """Count with progress; stops early when cancelled."""
+    for i in range(steps):
+        ctx.check_cancelled()
+        ctx.progress(i + 1, total=steps, message=f"step {i + 1}")
+        ctx.progress(i + 1)                 # repeated value: silently dropped
+        time.sleep(delay)
+    return f"counted {steps}"
+
+
 if __name__ == "__main__":
     server.run()

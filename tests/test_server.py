@@ -9,6 +9,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -169,6 +170,42 @@ class ServerTest(unittest.TestCase):
                           "params": {"name": "sleep", "arguments": {"seconds": 1}}})
         self.assertEqual(self.call("ping")["result"], {})     # answered first
         self.assertEqual(self.client.recv()["id"], "slow")
+
+    def test_progress_notifications(self):
+        reply, notes = self.client.request("tools/call", {
+            "name": "count", "arguments": {"steps": 3, "delay": 0}, "_meta": {"progressToken": "tok"}})
+        self.assertEqual(reply["result"]["content"][0]["text"], "counted 3")
+        self.assertEqual([n["method"] for n in notes], ["notifications/progress"] * 3)
+        self.assertEqual(notes[0]["params"], {"progressToken": "tok", "progress": 1, "total": 3,
+                                              "message": "step 1"})
+        self.assertEqual([n["params"]["progress"] for n in notes], [1, 2, 3])
+
+    def test_no_progress_without_token(self):
+        reply, notes = self.client.request("tools/call", {"name": "count", "arguments": {"steps": 2, "delay": 0}})
+        self.assertEqual(notes, [])
+
+    def test_cancel_stops_tool_and_suppresses_answer(self):
+        self.client.send({"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {
+            "name": "count", "arguments": {"steps": 50, "delay": 0.05}, "_meta": {"progressToken": 7}}})
+        self.assertEqual(self.client.recv()["method"], "notifications/progress")
+        self.client.send({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                          "params": {"requestId": 99, "reason": "user stop"}})
+        reply, notes = self.client.request("ping")
+        self.assertEqual(reply["result"], {})
+        time.sleep(0.3)                     # longer than one step of the tool
+        late = []
+        while not self.client.lines.empty():
+            late.append(self.client.recv())
+        seen = notes + late
+        self.assertFalse([m for m in seen if m.get("id") == 99], seen)
+        self.assertLess(len(seen), 5)       # progress stopped quickly
+        self.client.close()
+        self.assertIn(b"cancelled (user stop)", b"".join(self.client.stderr))
+
+    def test_cancel_unknown_request_is_ignored(self):
+        self.client.send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 12345}})
+        self.client.send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": [1]}})
+        self.assertEqual(self.call("ping")["result"], {})
 
     def test_exits_when_stdin_closes(self):
         self.assertEqual(self.client.close(), 0)
