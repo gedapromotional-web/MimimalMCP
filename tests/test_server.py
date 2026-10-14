@@ -164,7 +164,8 @@ class ServerTest(unittest.TestCase):
     def test_print_in_tool_goes_to_stderr(self):
         self.assertEqual(self.tool("chatty")["result"]["content"][0]["text"], "done")
         self.client.close()
-        self.assertIn(b"this goes to stderr\n", b"".join(self.client.stderr))
+        stderr = b"".join(self.client.stderr).replace(b"\r\n", b"\n")  # text mode on Windows
+        self.assertIn(b"this goes to stderr\n", stderr)
 
     def test_slow_tool_does_not_block_other_requests(self):
         self.client.send({"jsonrpc": "2.0", "id": "slow", "method": "tools/call",
