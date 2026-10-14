@@ -88,6 +88,12 @@ server.run()
 
 You need Python 3.9 or newer, on Windows, macOS or Linux.
 
+> **Don't double-click the `.py` files.** A server has no window: Claude
+> starts it in the background and talks to it through stdin/stdout. If you
+> open a server by hand, it prints a short note on how to connect it and
+> waits; press Ctrl+C to quit. `mimimalmcp.py` is a library, so on its own it
+> only prints its usage. Run the tests from a terminal (see [Tests](#tests)).
+
 ## How it works
 
 <p align="center">

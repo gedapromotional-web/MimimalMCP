@@ -30,6 +30,7 @@ Standard library only, Python 3.9+, MIT license.
 
 import inspect
 import json
+import os
 import re
 import sys
 import threading
@@ -202,6 +203,17 @@ def _error_result(message):
 # The server
 # ----------------------------------------------------------------------------
 
+_BY_HAND = """
+  This is an MCP server: Claude starts it and talks to it through stdin/stdout,
+  so there is nothing to see when you open it by hand. To use it with Claude Code:
+
+      claude mcp add my-tools -- python "{script}"
+
+  For Claude Desktop, see the README. You can also type JSON-RPC here, e.g.
+      {{"jsonrpc":"2.0","id":1,"method":"tools/list"}}
+  Press Ctrl+C to quit.
+"""
+
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
 
@@ -272,13 +284,18 @@ class Server:
         if hasattr(sys.stderr, "reconfigure"):
             sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
         self.log(f"{self.name} {self.version} ready with {len(self._tools)} tool(s)")
+        if sys.stdin.isatty():      # started by hand (double-click, terminal), not by a client
+            print(_BY_HAND.format(script=os.path.abspath(sys.argv[0])), file=sys.stderr, flush=True)
         stdin = sys.stdin.buffer
-        while True:
-            line = stdin.readline()
-            if not line:            # EOF: the client is gone, so are we
-                break
-            if line.strip():
-                self._handle_line(line)
+        try:
+            while True:
+                line = stdin.readline()
+                if not line:        # EOF: the client is gone, so are we
+                    break
+                if line.strip():
+                    self._handle_line(line)
+        except KeyboardInterrupt:   # Ctrl+C in a terminal
+            pass
         self.log("stdin closed, bye")
 
     # -- dispatch ------------------------------------------------------------
@@ -400,3 +417,10 @@ class Server:
         if not ctx.cancelled:               # a cancelled call gets no answer at all
             result = self._finish(result, ctx._stateless)
             self._send({"jsonrpc": "2.0", "id": ctx.request_id, "result": result})
+
+
+if __name__ == "__main__":
+    # This file is a library: import it from your own script instead.
+    print(__doc__)
+    if sys.stdin.isatty():          # keep a double-clicked window open
+        input("This module does nothing on its own. Press Enter to close.")
