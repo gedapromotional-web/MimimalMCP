@@ -293,7 +293,7 @@ def banner():
         f'</pattern>')
     c.under.append('<rect x="0" y="84" width="320" height="16" fill="url(#brick)"/>')
 
-    title = "MCP MINIMAL"
+    title = "MIMIMALMCP"
     c.text((320 - c.text_width(title, 3)) // 2, 9, title, YELLOW, size=3, shade=ORANGE, outline=INK, shadow=RED)
     sub = "ONE FILE * ZERO DEPENDENCIES * PURE PYTHON"
     c.text((320 - c.text_width(sub)) // 2, 39, sub, CYAN, outline=INK)
@@ -316,7 +316,7 @@ def banner():
     press = "PRESS START: COPY ONE FILE"
     press_px = rects(lambda s: s.text((320 - s.text_width(press)) // 2, 60, press, WHITE, outline=INK))
     c.extra.append(blink(press_px, "1.6s"))
-    c.save("banner.svg", "MCP MINIMAL: one file, zero dependencies, pure Python")
+    c.save("banner.svg", "MIMIMALMCP: one file, zero dependencies, pure Python")
 
 
 def how_it_works():

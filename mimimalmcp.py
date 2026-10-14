@@ -1,8 +1,8 @@
-"""mcp_minimal: a Model Context Protocol (MCP) server in one file.
+"""MimimalMCP (mimimalmcp.py): a Model Context Protocol (MCP) server in one file.
 
 Copy this file into your project, decorate a few functions, call run():
 
-    from mcp_minimal import Server
+    from mimimalmcp import Server
 
     server = Server("demo")
 

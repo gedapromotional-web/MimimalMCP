@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/art/banner.svg" alt="MCP MINIMAL: one file, zero dependencies, pure Python" width="100%">
+  <img src="docs/art/banner.svg" alt="MIMIMALMCP: one file, zero dependencies, pure Python" width="100%">
 </p>
 
 <p align="center">
@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <b>A <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server in one Python file.</b><br>
-  Copy <code>mcp_minimal.py</code> into your project, decorate a function, and Claude can call it.
+  <b>MimimalMCP: a <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server in one Python file.</b><br>
+  Copy <code>mimimalmcp.py</code> into your project, decorate a function, and Claude can call it.
 </p>
 
 ---
@@ -43,7 +43,7 @@ is complete and well maintained. It also brings dependencies and a lot of
 code, which makes it hard to see what MCP actually is: a few JSON messages
 going back and forth over a pipe.
 
-`mcp_minimal.py` is the opposite trade-off:
+`mimimalmcp.py` is the opposite trade-off:
 
 - **One file.** Copy it next to your script. There is nothing to `pip install`
   and no virtual environment to set up.
@@ -75,14 +75,14 @@ SDK. Your tool functions will port over easily.
 ## Quick start
 
 ```python
-from mcp_minimal import Server
+from mimimalmcp import Server
 server = Server("demo")
 @server.tool()
 def add(a: int, b: int) -> int: return a + b
 server.run()
 ```
 
-1. Save the code above as `demo.py` next to `mcp_minimal.py`.
+1. Save the code above as `demo.py` next to `mimimalmcp.py`.
 2. Run `claude mcp add demo -- python /full/path/to/demo.py`.
 3. Ask Claude: *"use the add tool to add 2 and 3"*.
 
@@ -109,7 +109,7 @@ back.
 
 ```python
 from typing import Annotated, Literal, Optional
-from mcp_minimal import Context, Server, ToolError
+from mimimalmcp import Context, Server, ToolError
 
 server = Server("my-tools", version="1.0.0",
                 instructions="Optional hints for the model about these tools.")
@@ -180,7 +180,7 @@ appear in the schema.
 
 ```python
 import time
-from mcp_minimal import Context
+from mimimalmcp import Context
 
 @server.tool()
 def slow_count(to: int, ctx: Context) -> str:
@@ -336,7 +336,7 @@ Two clients were tested against the server:
 | [`examples/files.py`](examples/files.py) | read-only file tools limited to one folder, `ToolError`, and tool annotations |
 
 The examples add the parent folder to `sys.path` because they live in a
-subfolder. In your own project, `mcp_minimal.py` simply sits next to your
+subfolder. In your own project, `mimimalmcp.py` simply sits next to your
 script.
 
 ## Tests
@@ -355,7 +355,7 @@ them in JSON-RPC, the same way Claude does. They cover:
 
 ## Limits (compared with the official SDK)
 
-`mcp_minimal` stays small on purpose. It does **not** do any of the following:
+MimimalMCP stays small on purpose. It does **not** do any of the following:
 
 | Area | Not supported |
 | --- | --- |
@@ -374,7 +374,7 @@ them in JSON-RPC, the same way Claude does. They cover:
 
 Run the same command yourself, for example `python /full/path/to/demo.py`. It
 should print `[demo] demo 0.1.0 ready with 1 tool(s)` on stderr and then wait.
-If you get an `ImportError`, `mcp_minimal.py` is not next to your script.
+If you get an `ImportError`, `mimimalmcp.py` is not next to your script.
 Claude Desktop keeps each server's stderr in its MCP log files.
 </details>
 

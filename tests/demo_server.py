@@ -6,7 +6,7 @@ import time
 from typing import Annotated, Literal, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from mcp_minimal import Context, Server, ToolError  # noqa: E402
+from mimimalmcp import Context, Server, ToolError  # noqa: E402
 
 server = Server("demo", version="1.2.3", instructions="Test server.")
 

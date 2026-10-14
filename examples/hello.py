@@ -6,10 +6,10 @@ Try it:  claude mcp add hello -- python /full/path/to/examples/hello.py
 import os
 import sys
 
-# Only needed because this example lives in a subfolder of mcp_minimal.py.
+# Only needed because this example lives in a subfolder of mimimalmcp.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mcp_minimal import Server  # noqa: E402
+from mimimalmcp import Server  # noqa: E402
 
 server = Server("hello")
 
